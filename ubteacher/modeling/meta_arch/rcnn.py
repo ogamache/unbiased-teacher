@@ -42,6 +42,9 @@ class TwoStagePseudoLabGeneralizedRCNN(GeneralizedRCNN):
                 images, features, None, compute_loss=False
             )
 
+            if "instances" in batched_inputs[0]:
+                super().visualize_training(batched_inputs, proposals_rpn)
+
             # roi_head lower branch (keep this for further production)  # notice that we do not use any target in ROI head to do inference !
             proposals_roih, ROI_predictions = self.roi_heads(
                 images,

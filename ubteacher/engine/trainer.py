@@ -8,6 +8,16 @@ from fvcore.nn.precise_bn import get_bn_modules
 import numpy as np
 from collections import OrderedDict
 
+import copy
+import matplotlib.pyplot as plt
+import cv2
+from itertools import chain
+from tqdm import tqdm
+from detectron2.engine import DefaultPredictor
+from detectron2.data import MetadataCatalog, DatasetCatalog
+from detectron2.data import detection_utils as utils
+from detectron2.utils.visualizer import Visualizer
+
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.engine import DefaultTrainer, SimpleTrainer, TrainerBase
@@ -311,6 +321,21 @@ class UBTeacherTrainer(DefaultTrainer):
         self.max_iter = cfg.SOLVER.MAX_ITER
         self.cfg = cfg
 
+        #### OG ####
+        self.VISUALIZE = False
+        self.DEBUG = True
+
+        # Plot images label_data_q, label_data_k, unlabel_data_q, unlabel_data_k
+        self.init_unlabel_data_q = []
+        self.init_unlabel_data_k = []
+
+        # Plot Loss
+        self.xdata = []
+        self.ydata_loss_total = []
+        self.ydata_loss_cls = []
+        self.ydata_loss_box_reg = []
+        #### OG ####
+
         self.register_hooks(self.build_hooks())
 
     def resume_or_load(self, resume=True):
@@ -479,6 +504,55 @@ class UBTeacherTrainer(DefaultTrainer):
         label_data_q, label_data_k, unlabel_data_q, unlabel_data_k = data
         data_time = time.perf_counter() - start
 
+        #### OG ####
+        self.init_unlabel_data_q = copy.deepcopy(unlabel_data_q)
+        self.init_unlabel_data_k = copy.deepcopy(unlabel_data_k)
+
+        if self.VISUALIZE:
+            if self.iter == 0:
+                self.init_unlabel_data_q = copy.deepcopy(unlabel_data_q)
+                self.init_unlabel_data_k = copy.deepcopy(unlabel_data_k)
+                print("Annotations from code: {}".format(self.init_unlabel_data_q[0]))
+                print("number instance: {}".format(self.init_unlabel_data_q[0].get("instances").get_fields().get(("gt_boxes")).tensor.cpu().numpy()))
+            # Visualize annotations
+            coco_metadata = MetadataCatalog.get("coco_2017_train")
+            dicts = list(chain.from_iterable([DatasetCatalog.get(k) for k in self.cfg.DATASETS.TRAIN]))
+            for dic in tqdm(dicts):
+                print("Annotation from dic: {}\n".format(dic))
+                img = utils.read_image(dic["file_name"], "BGR")
+                visualizer = Visualizer(img[:, :, ::-1], metadata=coco_metadata, scale=1)
+                gt_image = visualizer.draw_dataset_dict(dic)
+                cv2.imshow("Annotated image", gt_image.get_image()[:, :, ::-1])
+                k = cv2.waitKey(0)
+
+                if k == 27:
+                    cv2.destroyAllWindows()
+                    break
+            cv2.destroyAllWindows()
+            # print(self.init_unlabel_data_q[0])
+            # img_file = cv2.imread(self.init_unlabel_data_q[0].get("file_name"))
+            # img_gpu = self.init_unlabel_data_q[0].get("image").cpu().numpy().transpose(1, 2, 0)
+            # #img = self.init_unlabel_data_k[0].get("image").mul(255).byte()
+            # #img_gpu = img.cpu().numpy().transpose((1,2,0))
+            # print(np.min(img_gpu))
+            # print(np.isnan(img_gpu))
+            # #cv2.imshow("test",img_file)
+            # #cv2.imshow("test_gpu", img_gpu)
+            # #cv2.waitKey(0)
+            # boxes = self.init_unlabel_data_q[0].get("instances").get_fields().get(("gt_boxes"))
+            # for i in range(0,len(boxes)):
+            #    print(i)
+            #    top_left = boxes[i].tensor.cpu().numpy()[0][0:2]
+            #    bottom_right = boxes[i].tensor.cpu().numpy()[0][2:4]
+            #    print(int(top_left[0]), int(top_left[1]))
+            #    print(int(bottom_right[0]), int(bottom_right[1]))
+            #    print(type(top_left[0]))
+            #    cv2.rectangle(img_gpu, (top_left[0], top_left[1]), (bottom_right[0], bottom_right[1]), (0,255,0), 3)
+            # cv2.imshow("Ground truth", img_gpu)
+            # cv2.waitKey(3000)#
+            # cv2.destroyAllWindows()
+        #### OG ####
+
         # remove unlabeled data labels
         unlabel_data_q = self.remove_label(unlabel_data_q)
         unlabel_data_k = self.remove_label(unlabel_data_k)
@@ -520,6 +594,11 @@ class UBTeacherTrainer(DefaultTrainer):
                     proposals_roih_unsup_k,
                     _,
                 ) = self.model_teacher(unlabel_data_k, branch="unsup_data_weak")
+
+            #### OG ####
+            if self.DEBUG:
+                _, _, _, _ = self.model_teacher(self.init_unlabel_data_k, branch="unsup_data_weak")
+            #### OG ####
 
             #  Pseudo-labeling
             cur_threshold = self.cfg.SEMISUPNET.BBOX_THRESHOLD
@@ -589,6 +668,56 @@ class UBTeacherTrainer(DefaultTrainer):
         self.optimizer.zero_grad()
         losses.backward()
         self.optimizer.step()
+
+        # Va devoir trouver comment afficher les labels données....je ne comprends toujours pas comment leur annotation fonctionne...
+        if self.VISUALIZE and self.iter % 100 == 0 and self.iter != 0:
+            #tests = self.test(self.cfg, self.model)
+            #print("\n\n Tests: {} \n\n".format(tests))
+
+            # Visualize predictions
+            predictor_synth = DefaultPredictor(self.cfg)
+            dicts = list(chain.from_iterable([DatasetCatalog.get(k) for k in self.cfg.DATASETS.TRAIN]))
+            coco_metadata = MetadataCatalog.get("coco_2017_train")
+            for dic in tqdm(dicts):
+                img = utils.read_image(dic["file_name"], "BGR")
+                outputs_synth = predictor_synth(img)
+                v_synth = Visualizer(img[:, :, ::-1],
+                    metadata=coco_metadata, 
+                    scale=1, 
+                    #instance_mode =  ColorMode.IMAGE     # remove color from image, better see instances  
+                )
+                print(outputs_synth)
+                out_synth = v_synth.draw_instance_predictions(outputs_synth["instances"].to("cpu"))
+                cv2.imshow('predictions', out_synth.get_image()[:, :, ::-1])
+                k = cv2.waitKey(0)
+        
+                # exit loop if esc is pressed
+                if k == 27:
+                    cv2.destroyAllWindows()
+                    break
+            cv2.destroyAllWindows()
+        
+        #### OG ####
+        if self.DEBUG:
+            self.xdata.append(self.iter)
+            self.ydata_loss_total.append(losses)
+            self.ydata_loss_cls.append(loss_dict.get("loss_cls"))
+            self.ydata_loss_box_reg.append(loss_dict.get("loss_box_reg"))
+            if self.iter % 500 == 0 and self.iter != 0:
+                try:
+                    fig, ax = plt.subplots()
+                    plt.cla()
+                    plt.plot(self.xdata, self.ydata_loss_total, label="loss_total")
+                    plt.plot(self.xdata, self.ydata_loss_cls, label="loss_cls")
+                    plt.plot(self.xdata, self.ydata_loss_box_reg, label="loss_box_reg")
+                    plt.tight_layout()
+                    plt.legend()
+                    plt.show(block=False)
+                    plt.pause(5)
+                    plt.close()
+                except:
+                    pass
+        #### OG ####
 
     def _write_metrics(self, metrics_dict: dict):
         metrics_dict = {

@@ -17,6 +17,8 @@ import ubteacher.data.datasets.builtin
 
 from ubteacher.modeling.meta_arch.ts_ensemble import EnsembleTSModel
 
+from detectron2.data.datasets import register_coco_instances
+
 
 def setup(args):
     """
@@ -28,6 +30,9 @@ def setup(args):
     cfg.merge_from_list(args.opts)
     cfg.freeze()
     default_setup(cfg, args)
+    # Register own dataset
+    register_coco_instances("darpa_train", {}, "/home/alienware/projet_experimental/unbiased-teacher/datasets/darpa/annotations/coco_annotations_train.json", "/home/alienware/projet_experimental/unbiased-teacher/datasets/darpa/train/")
+    register_coco_instances("darpa_val", {}, "/home/alienware/projet_experimental/unbiased-teacher/datasets/darpa/annotations/coco_annotations_val.json", "/home/alienware/projet_experimental/unbiased-teacher/datasets/darpa/val/")
     return cfg
 
 
